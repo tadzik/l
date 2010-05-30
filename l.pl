@@ -3,66 +3,76 @@ use strict;
 use warnings;
 use Gtk2 '-init';
 use Gtk2::Gdk::Keysyms;
-use Data::Dumper;
+use XML::Simple;
+use File::Slurp;
 
-my @data;
-
-# Reading config file
-open CONFIG, "<$ENV{HOME}/.config/l.conf" or die "Could not open config file";
-while (<CONFIG>) {
-	chomp;
-	next if $_ eq "";
-	my ($ab, $des) = m/^(.) (.+)$/;
-	my $comm = <CONFIG>;
-	if (!$comm) {
-		die "No command specified for '$des'";
-	}
-	chomp($comm);
-	my $icon = <CONFIG>;
-	if (!$comm) {
-		die "No icon specified for '$des'";
-	}
-	chomp($icon);
-	push @data, [$ab, $des, $comm, $icon];
-}
-close CONFIG;
-
+# writing pid
+open PIDFILE, '>', "$ENV{HOME}/.config/l.pid" or die "Unable to open ~/.config/l.pid";
+print PIDFILE $$;
+close PIDFILE;
 # Creating our window
 my $win = Gtk2::Window->new('toplevel');
 $win->signal_connect(delete_event => sub { Gtk2->main_quit; });
-$win->signal_connect('key-press-event' => \&keypress_cb);
+$win->signal_connect('key-press-event' => sub {
+	my ($w, $e) = @_;
+	$w->hide_all if $e->keyval == $Gtk2::Gdk::Keysyms{Escape};
+	return 0;
+});
 $win->set_position('center_always');
-$win->set_border_width('10');
+$win->set_border_width(10);
 $win->set_resizable(0);
+# adding entries from config
+my $data = XMLin(scalar read_file("$ENV{HOME}/.config/menu.xml"));
+my @data;
 
-my $vbox = Gtk2::VBox->new(0, 5);
-# Creating a lookup label
-foreach (@data) {
-	my $hbox = Gtk2::HBox->new(1, 0);
-	my $pixbuf = Gtk2::Gdk::Pixbuf->new_from_file_at_size(@{$_}[3], 32, 32);
-	my $icon = Gtk2::Image->new_from_pixbuf($pixbuf);
-	my $txt = "<b>@{$_}[0]</b>: @{$_}[1]\n<span size='small'>@{$_}[2]</span>";
-	my $label = Gtk2::Label->new;
-	$label->set_markup($txt);
-	$label->set_justify('fill');
-	$label->set_alignment(0, 0);
-	$hbox->add($icon);
-	$hbox->add($label);
-
-	$vbox->add($hbox);
+my $vbox = Gtk2::VBox->new(0, 0);
+foreach my $frame (sort keys %$data) {
+	my $gtkframe = Gtk2::Frame->new($frame);
+	my $bbox = Gtk2::HButtonBox->new;
+	$bbox->set_spacing(5);
+	$bbox->set_border_width(5);
+	$bbox->set_layout('spread');
+	foreach my $entry (@{$data->{$frame}->{entry}}) {
+		my $button = newbutton(
+			$win,
+			$entry->{label},
+			$entry->{exec},
+			$entry->{icon},
+		);
+		$bbox->add($button);
+	}
+	$gtkframe->add($bbox);
+	$vbox->add($gtkframe);
 }
 
 $win->add($vbox);
-$win->show_all;
+$SIG{USR1} = sub { $win->show_all };
+$SIG{USR2} = sub { $win->hide_all };
+$SIG{TERM} = sub { Gtk2->main_quit };
 Gtk2->main;
 
-sub keypress_cb {
-	my ($w, $e) = (shift, shift);
-	Gtk2->main_quit if $e->keyval == $Gtk2::Gdk::Keysyms{Escape};
-	my $key = chr($e->keyval);
-	my ($el) = grep {@{$_}[0] eq $key} @data;
-	if ($el) {
-		system("@{$el}[2] &");
-		Gtk2->main_quit;
-	}
+sub newbutton {
+	my ($win, $label, $exec, $icon) = @_;
+	my $button = Gtk2::Button->new;
+	my $gtklabel = Gtk2::Label->new_with_mnemonic($label);
+	my $pixbuf = Gtk2::Gdk::Pixbuf->new_from_file_at_size($icon, 32, 32);
+	my $image = Gtk2::Image->new_from_pixbuf($pixbuf);
+	my $key = lc(substr $label, index($label, '_') + 1, 1);
+	$button->signal_connect('clicked' => sub {
+		my (undef, $e) = @_;
+		system("$exec &");
+		$win->hide_all;
+	});
+	$win->signal_connect('key-press-event' => sub {
+		my (undef, $e) = @_;
+		if ($e->keyval eq ord($key)) {
+			system("$exec &");
+			$win->hide_all;
+		}
+	});
+	my $vbox = Gtk2::VBox->new(0, 0);
+	$vbox->add($image);
+	$vbox->add($gtklabel);
+	$button->add($vbox);
+	return $button;
 }
